@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Google Calendar Integration</title>
+    <script>
+        function initiateOAuthFlow() {
+            // Redirect the user to the Google OAuth initiation endpoint
+            window.location.href = '/rest/v1/calendar/init/';
+        }
+
+        async function fetchCalendarEvents() {
+            try {
+                const response = await fetch('/rest/v1/calendar/events/');  // Use a new endpoint for fetching events
+                const data = await response.json();
+                
+                const eventList = document.getElementById('events');
+                eventList.innerHTML = '';  // Clear existing content
+                if (data.length > 0) {
+                    data.forEach(event => {
+                        const li = document.createElement('li');
+                        li.textContent = `${event.summary} - ${event.start}`;
+                        eventList.appendChild(li);
+                    });
+                } else {
+                    eventList.innerHTML = '<li>No upcoming events found.</li>';
+                }
+            } catch (error) {
+                console.error('Error fetching events:', error);
+                alert('Failed to fetch events.');
+            }
+        }
+    </script>
+</head>
+<body>
+    <h1>Google Calendar Integration</h1>
+    
+    <!-- Button to start the OAuth2 flow -->
+    <button onclick="initiateOAuthFlow()">Connect to Google Calendar</button>
+
+    <!-- Button to fetch calendar events -->
+    <button onclick="fetchCalendarEvents()">Fetch Events</button>
+
+    <!-- Display the fetched events here -->
+    <ul id="events"></ul>
+</body>
+</html>

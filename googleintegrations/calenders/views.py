@@ -5,9 +5,14 @@ from django.http import HttpResponseRedirect
 from rest_framework import exceptions
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from django.shortcuts import redirect
 
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
+from datetime import datetime, timedelta
+from django.views.generic import TemplateView
+from django.http import JsonResponse
+from google.oauth2.credentials import Credentials
 
 
 load_dotenv()
@@ -31,7 +36,10 @@ CLIENT_CONFIG = {
     }
 }
 
-SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
+SCOPES = ['https://www.googleapis.com/auth/calendar.readonly',
+        'https://www.googleapis.com/auth/userinfo.email',
+        'https://www.googleapis.com/auth/userinfo.profile',
+        'openid']
 
 class GoogleCalendarInitView(APIView):
     def get(self, request):
@@ -42,21 +50,39 @@ class GoogleCalendarInitView(APIView):
             return HttpResponseRedirect(authorization_url)
         except Exception as e:
             raise exceptions.ValidationError(str(e))
+        
+
+class GoogleCalendarEventsView(APIView):
+    def get(self, request):
+        credentials_data = request.session.get('credentials')
+        if not credentials_data:
+            return JsonResponse({'error': 'User not authenticated.'}, status=401)
+
+        credentials = Credentials(
+            token=credentials_data['token'],
+            refresh_token=credentials_data['refresh_token'],
+            token_uri=credentials_data['token_uri'],
+            client_id=credentials_data['client_id'],
+            client_secret=credentials_data['client_secret'],
+            scopes=credentials_data['scopes']
+        )
+
+        # Fetch the events from the Google Calendar API
+        service = build('calendar', 'v3', credentials=credentials)
+        seven_days_ago = datetime.utcnow() - timedelta(days=7)
+        seven_days_ago_rfc3339 = seven_days_ago.isoformat() + 'Z'
+        events_result = service.events().list(calendarId='primary', maxResults=10, singleEvents=True,
+                                              orderBy='startTime', timeMin=seven_days_ago_rfc3339).execute()
+        events = events_result.get('items', [])
+        
+        events_data = [
+            {'summary': event.get('summary', 'No title'), 'start': event['start'].get('dateTime', event['start'].get('date'))}
+            for event in events
+        ]
+
+        return JsonResponse(events_data, safe=False)
 
 class GoogleCalendarRedirectView(APIView):
-    def process_events(self, credentials):
-            service = build('calendar', 'v3', credentials=credentials)
-            events_result = service.events().list(calendarId='primary', maxResults=10, singleEvents=True,
-                                                  orderBy='startTime').execute()
-            events = events_result.get('items', [])
-            if not events:
-                return Response({'error': 'No upcoming events found.'}, status=404)
-            response = []
-            for event in events:
-                start = event['start'].get('dateTime', event['start'].get('date'))
-                response.append({'start': start, 'summary': event['summary']})
-            return response
-
     def set_session(self, request, credentials):
         request.session['credentials'] = {
             'token': credentials.token,
@@ -72,14 +98,23 @@ class GoogleCalendarRedirectView(APIView):
             state = request.session.get('state')
             if not state:
                 return Response({'error': 'Invalid state parameter'}, status=400)
+
+            # Fetch token and store credentials in session
             flow = Flow.from_client_config(CLIENT_CONFIG, SCOPES, state=state, redirect_uri=os.getenv('REDIRECT_URI'))
             flow.fetch_token(authorization_response=request.build_absolute_uri())
             credentials = flow.credentials
             self.set_session(request, credentials)
-            return Response(self.process_events(credentials))
-        except Exception as e:
-            raise exceptions.ValidationError(str(e))
 
-class HomeView(APIView):
-    def get(self, request):
-        return Response({'Google Calendar Integration, click on the link to authorize your google account: http://localhost:8000/rest/v1/calendar/init/'})
+            # Redirect the user to the homepage or a custom frontend page
+            return HttpResponseRedirect('/')  # Or another page like '/calendar_events/'
+
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
+
+
+# class HomeView(APIView):
+#     def get(self, request):
+#         return Response({'Google Calendar Integration, click on the link to authorize your google account: http://localhost:8000/rest/v1/calendar/init/'})
+
+class HomeView(TemplateView):
+    template_name = 'index.html'
