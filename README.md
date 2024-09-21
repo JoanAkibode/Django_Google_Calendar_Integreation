@@ -1,6 +1,6 @@
 ### Basic Setup
 1. Install dependencies: `pip install -r requirements.txt`.
-2. Add `CLIENT_ID, CLIENT_SECRET, PROJECT_ID` in `.env` file. You can copy the `.env.example` file and update the values accordingly.
+2. Add `CLIENT_ID, CLIENT_SECRET, PROJECT_ID` in `.env` file. You can copy the `.env_example` file and update the values accordingly.
 ```
     cp .env.example .env
 ```
