@@ -13,6 +13,13 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 from pathlib import Path
 import os
 
+
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -39,7 +46,8 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
-    'calenders'
+    'calenders',
+    'anymail',
 ]
 
 MIDDLEWARE = [
@@ -127,3 +135,24 @@ STATICFILES_DIRS = [
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+EMAIL_BACKEND = "anymail.backends.mailgun.EmailBackend"  # Replace with your provider
+ANYMAIL = {
+    "MAILGUN_API_KEY": "your-mailgun-api-key",  # Example for Mailgun
+    "MAILGUN_SENDER_DOMAIN": "your-domain.com",
+}
+
+
+
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = 'akibodejoan@gmail.com'  # Replace with your Gmail address
+EMAIL_HOST_PASSWORD = 'conu uome rfij dqiq'  # Replace with your Gmail password
+DEFAULT_FROM_EMAIL = 'akibodejoan@gmail.com'
+
+
+
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')

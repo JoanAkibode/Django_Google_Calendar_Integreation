@@ -9,16 +9,17 @@
             // Redirect the user to the Google OAuth initiation endpoint
             window.location.href = '/rest/v1/calendar/init/';
         }
-
         async function fetchCalendarEvents() {
             try {
-                const response = await fetch('/rest/v1/calendar/events/');  // Use a new endpoint for fetching events
+                const response = await fetch('/rest/v1/calendar/events/');  // Ensure this endpoint matches your backend URL
                 const data = await response.json();
-                
+
                 const eventList = document.getElementById('events');
                 eventList.innerHTML = '';  // Clear existing content
-                if (data.length > 0) {
-                    data.forEach(event => {
+
+                // Check if 'events' exists in the response and has items
+                if (data.events && data.events.length > 0) {
+                    data.events.forEach(event => {
                         const li = document.createElement('li');
                         li.textContent = `${event.summary} - ${event.start}`;
                         eventList.appendChild(li);
