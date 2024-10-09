@@ -9,12 +9,13 @@ from django.shortcuts import redirect
 
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone, time
 from django.views.generic import TemplateView
 from django.http import JsonResponse
 from google.oauth2.credentials import Credentials
 
-from django.contrib.auth.models import User
+from django.contrib.auth.models import User, AnonymousUser
+from django.contrib.auth import login
 from .models import UserProfile
 
 from rest_framework import generics
@@ -28,6 +29,9 @@ import openai
 from django.conf import settings
 from rest_framework.views import APIView
 from rest_framework.response import Response
+
+from rest_framework.permissions import IsAuthenticated
+
 
 
 load_dotenv()
@@ -67,12 +71,19 @@ class GoogleCalendarInitView(APIView):
             raise exceptions.ValidationError(str(e))
         
 
+from .models import Event, UserProfile
+
 class GoogleCalendarEventsView(APIView):
     def get(self, request):
         # Check for user authentication and credentials
         credentials_data = request.session.get('credentials')
         if not credentials_data:
-            return JsonResponse({'error': 'User not authenticated.'}, status=401)
+            return JsonResponse({'error': 'User not authenticated with Google.'}, status=401)
+        
+        if isinstance(request.user, AnonymousUser):
+            return JsonResponse({'error': 'User not authenticated with Django.'}, status=401)
+        
+#        request.session['syncToken'] = None 
 
         # Set up Google OAuth credentials
         credentials = Credentials(
@@ -84,33 +95,129 @@ class GoogleCalendarEventsView(APIView):
             scopes=credentials_data['scopes']
         )
 
+        # Refresh token if necessary
+        if credentials.expired and credentials.refresh_token:
+            try:
+                credentials.refresh(request())
+                request.session['credentials'] = {
+                    'token': credentials.token,
+                    'refresh_token': credentials.refresh_token,
+                    'token_uri': credentials.token_uri,
+                    'client_id': credentials.client_id,
+                    'client_secret': credentials.client_secret,
+                    'scopes': credentials.scopes,
+                }
+                request.session.modified = True
+            except Exception as e:
+                return JsonResponse({'error': f'Failed to refresh token: {str(e)}'}, status=500)
+
         # Initialize Google Calendar API service
         service = build('calendar', 'v3', credentials=credentials)
-        
-        # Fetch events from the past week
-        seven_days_ago = datetime.utcnow() - timedelta(days=7)
-        seven_days_ago_rfc3339 = seven_days_ago.isoformat() + 'Z'
+
+        # Get current UTC time
+# Get current UTC time
+        now = datetime.now(timezone.utc)
+
+        # Calculate start and end dates
+        start_date = now - timedelta(days=30)
+        end_date = now + timedelta(days=60)
+
+        # Ensure start_date and end_date are formatted correctly
+        # Use timespec='seconds' to round to seconds and append 'Z' for UTC
+        start_date_rfc3339 = start_date.isoformat(timespec='seconds').replace('+00:00', 'Z')
+        end_date_rfc3339 = end_date.isoformat(timespec='seconds').replace('+00:00', 'Z')
+
+        print("start_date_rfc3339:", start_date_rfc3339)
+        print("end_date_rfc3339:", end_date_rfc3339)
+
+
+        # Fetch user's syncToken (if available) for incremental sync
+        user_profile = UserProfile.objects.get(user=request.user)
+        sync_token = user_profile.google_sync_token
+
         try:
-            events_result = service.events().list(
-                calendarId='primary',
-                maxResults=request.GET.get('maxResults', 50),  # Allows specifying maxResults via query parameters
-                singleEvents=True,
-                orderBy='startTime',
-                timeMin=seven_days_ago_rfc3339
-            ).execute()
+            if sync_token:
+                # Use syncToken to fetch only changed events but still apply date range filter
+                print("Using syncToken for incremental sync")
+                events_result = service.events().list(
+                    calendarId='primary',
+                    syncToken=sync_token,
+                    timeMin=start_date_rfc3339,  # Add timeMin for the start date
+                    timeMax=end_date_rfc3339    # Add timeMax for the end date
+                ).execute()
+            else:
+                # No syncToken, first sync, fetch all events within the time range
+                events_result = service.events().list(
+                    calendarId='primary',
+                    maxResults=250,
+                    singleEvents=True,
+                    orderBy='startTime',
+                    timeMin=start_date_rfc3339,
+                    timeMax=end_date_rfc3339
+                ).execute()
+
         except Exception as e:
+            if 'Sync token is invalid' in str(e):
+                request.session['syncToken'] = None  # Reset sync token for a full sync on the next attempt
+            
+            print("Error while fetching events:", str(e))
             return JsonResponse({'error': f'Failed to fetch events: {str(e)}'}, status=500)
 
         events = events_result.get('items', [])
-        
-        # Create a list of events data
-        events_data = [
-            {'summary': event.get('summary', 'No title'), 'start': event['start'].get('dateTime', event['start'].get('date'))}
-            for event in events
-        ]
 
-        # Return the events in a standardized response
-        return JsonResponse({"events": events_data}, status=200)
+        # Save or update events in the database
+        for event in events:
+            event_start_str = event['start'].get('dateTime', event['start'].get('date'))
+            event_end_str = event['end'].get('dateTime', event['end'].get('date'))
+
+            # Convert to datetime while preserving the timezone info
+            event_start = datetime.fromisoformat(event_start_str)
+            event_end = datetime.fromisoformat(event_end_str)
+
+            # If the event is an all-day event (date only), make it UTC-aware with start of the day
+            if 'date' in event['start']:
+                event_start = event_start.replace(tzinfo=timezone.utc)
+            if 'date' in event['end']:
+                event_end = event_end.replace(tzinfo=timezone.utc)   
+
+            event_in_story_window = False
+
+            current_time = now.time()
+
+            # Define the story window logic
+            if current_time < time(8, 0):  # Before 8 AM
+                event_in_story_window = event_start.date() == (now.date() - timedelta(days=1))  # Yesterday's events
+            else:  # After 8 AM
+                event_in_story_window = event_start.date() == now.date()  # Today's events
+
+            Event.objects.update_or_create(
+                user=request.user,
+                event_id=event['id'],
+                defaults={
+                    'summary': event.get('summary', 'No title'),
+                    'description': event.get('description', ''),
+                    'start': event_start,
+                    'end': event_end,
+                    'created': event['created'],
+                    'updated': event['updated'],
+                    'html_link': event['htmlLink'],
+                    'location': event.get('location', ''),
+                    'status': event['status'],
+                    'organizer_email': event.get('organizer', {}).get('email', ''),
+                    'include_in_next_daily_story': event_in_story_window,
+                }
+            )
+
+        # Store the new syncToken after the fetch
+        if 'nextSyncToken' in events_result:
+            print("Storing nextSyncToken:", events_result['nextSyncToken'])
+            user_profile.google_sync_token = events_result['nextSyncToken']
+            user_profile.save()
+
+        return JsonResponse({"events": events}, status=200)
+
+
+
 
 class GoogleCalendarRedirectView(APIView):
     def set_session(self, request, credentials):
@@ -122,6 +229,7 @@ class GoogleCalendarRedirectView(APIView):
             'client_secret': credentials.client_secret,
             'scopes': credentials.scopes,
         }
+        request.session.modified = True 
 
     def get(self, request):
         try:
@@ -134,6 +242,7 @@ class GoogleCalendarRedirectView(APIView):
             flow.fetch_token(authorization_response=request.build_absolute_uri())
             credentials = flow.credentials
             self.set_session(request, credentials)
+            
             # Extract user info from Google credentials
             user_info_service = build('oauth2', 'v2', credentials=credentials)
             user_info = user_info_service.userinfo().get().execute()
@@ -146,13 +255,44 @@ class GoogleCalendarRedirectView(APIView):
                 user.last_name = user_info.get('family_name', '')
                 user.save()
 
+            # Log the user in with Django's authentication system
+            user.backend = 'django.contrib.auth.backends.ModelBackend'
+            login(request, user)  # Log the user into Django
+
             # Ensure user profile exists (signal should handle this automatically)
             UserProfile.objects.get_or_create(user=user)
 
-            # Redirect the user
-            return HttpResponseRedirect('/')
+            # Redirect the user to the dashboard
+            return HttpResponseRedirect(f'http://localhost:3000/dashboard?auth=true&email={user.email}')
+
         except Exception as e:
             return Response({'error': str(e)}, status=500)
+
+
+
+# New view to fetch only events for the next story
+class NextStoryEventsView(APIView):
+    def get(self, request):
+        if not request.user.is_authenticated:
+            return JsonResponse({'error': 'User not authenticated'}, status=401)
+
+        # Fetch events that are marked to be included in the next story
+        next_story_events = Event.objects.filter(user=request.user, include_in_next_daily_story=True)
+
+        # Serialize and return the events
+        event_list = [
+            {
+                'summary': event.summary,
+                'start': event.start,
+                'end': event.end,
+                'include_in_next_daily_story': event.include_in_next_daily_story
+            }
+            for event in next_story_events
+        ]
+
+        return JsonResponse({'events': event_list}, status=200)
+
+
 
 
 # class HomeView(APIView):

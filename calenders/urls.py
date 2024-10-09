@@ -1,7 +1,7 @@
 from django.urls import path
 from .views import GoogleCalendarInitView, GoogleCalendarRedirectView, GoogleCalendarEventsView, HomeView
 from django.urls import path
-from .views import UserProfileDetail, StoryList,  GenerateStoryView
+from .views import UserProfileDetail, StoryList,  GenerateStoryView,NextStoryEventsView
 
 
 urlpatterns = [
@@ -12,4 +12,5 @@ urlpatterns = [
     path('stories/', StoryList.as_view(), name='story-list'),
     path('events/', GoogleCalendarEventsView.as_view(), name='fetch-events'),
     path('generate-story/', GenerateStoryView.as_view(), name='generate-story'),
+    path('next-story-events/', NextStoryEventsView.as_view(), name='next_story_events'),
 ]
