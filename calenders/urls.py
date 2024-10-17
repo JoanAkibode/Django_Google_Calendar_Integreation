@@ -1,7 +1,7 @@
 from django.urls import path
 from .views import GoogleCalendarInitView, GoogleCalendarRedirectView, GoogleCalendarEventsView, HomeView
 from django.urls import path
-from .views import UserProfileDetail, StoryList,  GenerateStoryView,NextStoryEventsView
+from .views import UserProfileDetail, StoryList,  GenerateStoryView,NextStoryEventsView, ChangeWantedStatusView,DjangoAuthStatusView, GoogleAuthStatusView
 
 
 urlpatterns = [
@@ -13,4 +13,10 @@ urlpatterns = [
     path('events/', GoogleCalendarEventsView.as_view(), name='fetch-events'),
     path('generate-story/', GenerateStoryView.as_view(), name='generate-story'),
     path('next-story-events/', NextStoryEventsView.as_view(), name='next_story_events'),
+    path('change-wanted-status/', ChangeWantedStatusView.as_view(), name='change_wanted_status'),
+    path('auth/status/', DjangoAuthStatusView.as_view(), name='django-auth-status'),
+
+    # Google authentication status
+    path('google-status/', GoogleAuthStatusView.as_view(), name='google-auth-status'),
+
 ]

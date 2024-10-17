@@ -31,6 +31,13 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 
 from rest_framework.permissions import IsAuthenticated
+from django.core.cache import cache
+
+from django.contrib.auth.decorators import login_required
+from django.utils.decorators import method_decorator
+
+from django.db import transaction
+
 
 
 
@@ -71,6 +78,28 @@ class GoogleCalendarInitView(APIView):
             raise exceptions.ValidationError(str(e))
         
 
+def update_in_time_window_for_events(user):
+    """Update the in_time_window field for all events of the given user."""
+    current_time_utc = datetime.now(timezone.utc)
+
+
+    # Fetch all existing events for the user
+    existing_events = Event.objects.filter(user=user)
+
+    for event in existing_events:
+        event_start = event.start
+        event_in_story_window = False
+
+        # Set the story window logic based on the current time
+        if current_time_utc.time() < time(8, 0):  # Before 8 AM
+            event_in_story_window = event_start.date() == (current_time_utc.date() - timedelta(days=1))  # Yesterday's events
+        else:  # After 8 AM
+            event_in_story_window = event_start.date() == current_time_utc.date()  # Today's events
+
+        # Update the event
+        event.in_time_window = event_in_story_window
+        event.save()
+
 from .models import Event, UserProfile
 
 class GoogleCalendarEventsView(APIView):
@@ -82,9 +111,21 @@ class GoogleCalendarEventsView(APIView):
         
         if isinstance(request.user, AnonymousUser):
             return JsonResponse({'error': 'User not authenticated with Django.'}, status=401)
-        
-#        request.session['syncToken'] = None 
 
+
+        # Implement rate-limiting
+        user_id = request.user.id
+        cache_key = f"google_calendar_last_call_{user_id}"
+        last_call_timestamp = cache.get(cache_key)
+        current_time = datetime.now(timezone.utc).timestamp()
+
+        # Check if the last call was within the last 2 seconds
+        if last_call_timestamp and (current_time - last_call_timestamp) < 5:
+            return JsonResponse({'error': 'Rate limit exceeded. Please wait 2 seconds between requests.'}, status=429)
+
+        # Update the cache with the current timestamp
+        cache.set(cache_key, current_time, timeout=2)
+        
         # Set up Google OAuth credentials
         credentials = Credentials(
             token=credentials_data['token'],
@@ -204,7 +245,7 @@ class GoogleCalendarEventsView(APIView):
                     'location': event.get('location', ''),
                     'status': event['status'],
                     'organizer_email': event.get('organizer', {}).get('email', ''),
-                    'include_in_next_daily_story': event_in_story_window,
+                    'in_time_window': event_in_story_window,
                 }
             )
 
@@ -213,6 +254,8 @@ class GoogleCalendarEventsView(APIView):
             print("Storing nextSyncToken:", events_result['nextSyncToken'])
             user_profile.google_sync_token = events_result['nextSyncToken']
             user_profile.save()
+
+        update_in_time_window_for_events(request.user)
 
         return JsonResponse({"events": events}, status=200)
 
@@ -277,7 +320,7 @@ class NextStoryEventsView(APIView):
             return JsonResponse({'error': 'User not authenticated'}, status=401)
 
         # Fetch events that are marked to be included in the next story
-        next_story_events = Event.objects.filter(user=request.user, include_in_next_daily_story=True)
+        next_story_events = Event.objects.filter(user=request.user, in_time_window=True)
 
         # Serialize and return the events
         event_list = [
@@ -285,7 +328,8 @@ class NextStoryEventsView(APIView):
                 'summary': event.summary,
                 'start': event.start,
                 'end': event.end,
-                'include_in_next_daily_story': event.include_in_next_daily_story
+                'in_time_window': event.in_time_window,
+                'wanted_by_the_user' : event.wanted_by_the_user
             }
             for event in next_story_events
         ]
@@ -293,6 +337,39 @@ class NextStoryEventsView(APIView):
         return JsonResponse({'events': event_list}, status=200)
 
 
+
+
+class ChangeWantedStatusView(APIView):
+    def post(self, request):
+        if not request.user.is_authenticated:
+            return JsonResponse({'error': 'User not authenticated'}, status=401)
+
+        event_id = request.data.get('event_id')
+        wanted_by_the_user = request.data.get('wanted_by_the_user')
+
+        # Validate input
+        if event_id is None or wanted_by_the_user is None:
+            return JsonResponse({'error': 'Invalid data provided'}, status=400)
+
+        if not isinstance(wanted_by_the_user, bool):
+            return JsonResponse({'error': 'Invalid value for wanted_by_the_user. Must be a boolean.'}, status=400)
+
+        try:
+            # Use atomic transaction to ensure data consistency
+            with transaction.atomic():
+                event = Event.objects.get(user=request.user, id=event_id)
+                event.wanted_by_the_user = wanted_by_the_user
+                event.save()
+
+            return JsonResponse({'message': 'Event updated successfully'}, status=200)
+
+        except Event.DoesNotExist:
+            return JsonResponse({'error': 'Event not found'}, status=404)
+
+        except Exception as e:
+            # Log the error for debugging purposes
+            print(f"Unexpected error occurred: {e}")
+            return JsonResponse({'error': 'An unexpected error occurred'}, status=500)
 
 
 # class HomeView(APIView):
@@ -332,11 +409,46 @@ def send_story_email(user_email, subject, message):
 
 
 
+
+class DjangoAuthStatusView(APIView):
+    @method_decorator(login_required)
+    def get(self, request):
+        return JsonResponse({'is_authenticated': True}, status=200)
+
+    def handle_no_permission(self):
+        return JsonResponse({'is_authenticated': False}, status=200)
+
+
+
+class GoogleAuthStatusView(APIView):
+    def get(self, request):
+        # Check for user authentication and Google credentials
+        credentials_data = request.session.get('credentials')
+        if credentials_data:
+            credentials = Credentials(
+                token=credentials_data['token'],
+                refresh_token=credentials_data['refresh_token'],
+                token_uri=credentials_data['token_uri'],
+                client_id=credentials_data['client_id'],
+                client_secret=credentials_data['client_secret'],
+                scopes=credentials_data['scopes'],
+            )
+
+            if credentials.valid:
+                return JsonResponse({'is_authenticated': True}, status=200)
+
+        return JsonResponse({'is_authenticated': False}, status=200)
+
+
+
+
+
 class GenerateStoryView(APIView):
     def post(self, request):
         try:
             # Retrieve events from the POST request body
-            events = request.data.get('events', [])
+            events = Event.objects.filter(user=request.user, in_time_window=True, wanted_by_the_user=True).order_by('start')
+
             if not events:
                 return JsonResponse({'error': 'No events provided'}, status=400)
 

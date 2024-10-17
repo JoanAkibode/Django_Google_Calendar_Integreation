@@ -40,7 +40,10 @@ class Event(models.Model):
     status = models.CharField(max_length=50)  # Status of the event (e.g., confirmed)
     html_link = models.URLField(blank=True, null=True)  # Optional link to the event on Google Calendar
     organizer_email = models.EmailField(blank=True, null=True)  # Organizer's email address (optional)
-    include_in_next_daily_story = models.BooleanField(default=False)  # Include this event in the next daily story
+    in_time_window = models.BooleanField(default=False)  
+    wanted_by_the_user = models.BooleanField(default=True) 
+
+
 
     def __str__(self):
         return f'{self.summary} ({self.event_id})'
